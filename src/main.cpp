@@ -1,26 +1,61 @@
 #include <Arduino.h>
 #include "esp_wifi.h"
+#include <Adafruit_NeoPixel.h>
 
 // Master Coder's Pin Mapping
-#define TX_PIN 43 
-#define RX_PIN 44
+#define TX_PIN 45 
+#define RX_PIN 21
+#define RGB_PIN 48
+#define NUM_PIXELS 1
+
+Adafruit_NeoPixel statusLED(NUM_PIXELS, RGB_PIN, NEO_GRB + NEO_KHZ800);
 
 void setup() {
+    // 0. Initialize Status LED
+    statusLED.begin();
+    statusLED.setPixelColor(0, statusLED.Color(255, 0, 0)); // Start RED (Searching)
+    statusLED.show();
+    
     // 1. Initialize Serial Interfaces
     Serial.begin(115200); // USB Monitor
+    delay(1000); // Wait for USB Serial to be ready
     Serial1.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN); // Inter-chip link to SparkleIoT
 
     // 2. Handshake Loop: Wait for SparkleIoT to be ready
     Serial.println("COMMANDER: Initializing handshake...");
+    Serial.printf("COMMANDER: TX Pin: %d, RX Pin: %d\n", TX_PIN, RX_PIN);
+    
+    int attemptCount = 0;
     while (true) {
+        attemptCount++;
+        Serial.printf("COMMANDER: Sending READY_QUERY (attempt %d)...\n", attemptCount);
         Serial1.println("READY_QUERY");
+        Serial1.flush(); // Make sure data is sent
+        
+        delay(100); // Give time for response
+        
         if (Serial1.available()) {
             String response = Serial1.readStringUntil('\n');
+            Serial.printf("COMMANDER: Received response: '%s'\n", response.c_str());
+            
             if (response.indexOf("SOLDIER_READY") != -1) {
                 Serial.println("COMMANDER: SparkleIoT Linked. System Green.");
+                statusLED.setPixelColor(0, statusLED.Color(0, 255, 0)); // Turn GREEN (Linked)
+                statusLED.show();
                 break;
             }
+        } else {
+            Serial.println("COMMANDER: No response from SparkleIoT");
         }
+        
+        // Skip handshake after 10 attempts for testing
+        if (attemptCount >= 10) {
+            Serial.println("COMMANDER: Handshake timeout - continuing anyway for testing");
+            statusLED.setPixelColor(0, statusLED.Color(255, 255, 0)); // Turn YELLOW (Warning)
+            statusLED.show();
+            break;
+        }
+        
         delay(500); // Don't flood the UART during boot
     }
 

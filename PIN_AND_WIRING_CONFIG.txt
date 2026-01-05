@@ -1,0 +1,198 @@
+================================================================================
+                    COMMANDER PROJECT - PIN & WIRING CONFIG
+================================================================================
+
+PROJECT OVERVIEW:
+- Two ESP32-S3 DevKit boards
+- COMMANDER board: Wi-Fi control & jamming
+- SOLDIER board: BLE jamming unit
+- Both boards communicate via UART serial
+- Status: Handshake is WORKING
+
+================================================================================
+                              GPIO PIN MAPPING
+================================================================================
+
+SERIAL COMMUNICATION PINS (Both Boards):
+  GPIO 17 = RX (Receive)
+  GPIO 18 = TX (Transmit)
+  GND = Ground (common reference)
+
+STATUS LED PIN (Both Boards):
+  GPIO 48 = WS2812 RGB LED
+
+================================================================================
+                           UART WIRING DIAGRAM
+================================================================================
+
+SOLDIER BOARD          →  CROSS-WIRED  →  COMMANDER BOARD
+────────────────────────────────────────────────────────
+GPIO 18 (TX)   ─────────────→─────────────→  GPIO 17 (RX)
+GPIO 17 (RX)   ←─────────────←─────────────←  GPIO 18 (TX)
+GND            ─────────────→─────────────→  GND
+
+IMPORTANT: The TX and RX are CROSSED - this is correct!
+  - SOLDIER TX (18) connects to COMMANDER RX (17)
+  - SOLDIER RX (17) connects to COMMANDER TX (18)
+  - Ground must be common on both boards
+
+================================================================================
+                           SERIAL CONFIGURATION
+================================================================================
+
+Baud Rate: 115200
+Data Bits: 8
+Parity: None
+Stop Bits: 1
+Format: SERIAL_8N1
+
+Monitor Port (SOLDIER): COM6 (adjust in soldier/platformio.ini as needed)
+Monitor Port (COMMANDER): Auto-detected USB
+
+================================================================================
+                          STATUS LED COLOR CODES
+================================================================================
+
+GPIO 48 - WS2812 RGB LED (Both Boards)
+
+RED (255, 0, 0):
+  - Booting/Initializing
+  - Waiting for handshake
+
+GREEN (0, 255, 0):
+  - Handshake complete
+  - Boards successfully linked
+  - System connection verified
+
+BLUE (0, 0, 255):
+  - Radio armed and ready
+  - System online and awaiting commands
+
+PURPLE (255, 0, 255):
+  - Active jamming operation
+  - Wi-Fi sweep or BLE burst in progress
+
+================================================================================
+                         HANDSHAKE SEQUENCE
+================================================================================
+
+1. SOLDIER powers on → LED red, waiting for COMMANDER
+2. COMMANDER powers on → LED red, waits 5 seconds for SOLDIER stabilization
+3. COMMANDER sends "READY_QUERY" on Serial1 (115200)
+4. SOLDIER receives "READY_QUERY" → responds with "SOLDIER_READY"
+5. COMMANDER receives "SOLDIER_READY" → sets LED green, handshake complete
+6. Both boards LED green for 1 second (confirmation)
+7. Both boards initialize radios
+8. Both boards set LED blue (armed and ready)
+
+STATUS: ✓ HANDSHAKE IS WORKING
+
+================================================================================
+                         RADIO SPECIFICATIONS
+================================================================================
+
+COMMANDER - Wi-Fi (802.11b/g/n):
+  - Channels: 1-13 (2.4GHz)
+  - Transmit Power: 20dBm (maximum)
+  - Antenna: U.FL connector (external antenna required)
+  - Mode: Channel sweep with 100ms dwell time per channel
+
+SOLDIER - BLE (Bluetooth Low Energy):
+  - Transmit Power: +9dBm (ESP_PWR_LVL_P9 - maximum)
+  - Channels: 37, 38, 39 (2.4GHz advertising channels)
+  - Operation: Triggered by COMMANDER "SWEEP_START" command
+  - Burst Duration: 80ms per trigger
+
+Coordination:
+  - COMMANDER sweeps Wi-Fi channels sequentially
+  - For each channel, COMMANDER sends "SWEEP_START" to SOLDIER
+  - SOLDIER generates BLE burst simultaneously
+  - Total cycle time per channel: ~100ms
+
+================================================================================
+                            MEMORY CONFIGURATION
+================================================================================
+
+COMMANDER:
+  - Flash: 16MB
+  - PSRAM: 8MB (QIO OPI configuration)
+  - Partition: default_16MB.csv
+  - Flash Speed: 80MHz
+
+SOLDIER:
+  - Flash: 16MB (standard)
+  - PSRAM: Available (default configuration)
+
+================================================================================
+                            PROJECT STRUCTURE
+================================================================================
+
+COMMANDER/
+├── platformio.ini              # Root board config
+├── src/
+│   └── main.cpp               # COMMANDER firmware
+├── soldier/
+│   ├── platformio.ini         # SOLDIER board config
+│   └── src/
+│       └── main.cpp           # SOLDIER firmware
+├── HARDWARE_CONFIG.md         # Full hardware documentation
+└── PIN_AND_WIRING_CONFIG.txt  # This file
+
+================================================================================
+                          POWER REQUIREMENTS
+================================================================================
+
+USB Power (Recommended):
+  - 5V per board via USB connector
+  - Typical draw: 80-350mA per board
+  - Simultaneous connection to PC recommended for monitoring
+
+External Power (Alternative):
+  - 5V regulated supply to 5V pin
+  - Minimum 1A per board recommended
+  - Do not exceed 5.5V
+
+================================================================================
+                          TROUBLESHOOTING CHECKLIST
+================================================================================
+
+If handshake fails:
+  ☐ Verify cross-wired TX/RX connections
+    - SOLDIER GPIO 18 (TX) → COMMANDER GPIO 17 (RX)
+    - SOLDIER GPIO 17 (RX) → COMMANDER GPIO 18 (TX)
+  ☐ Check GND connection between boards
+  ☐ Verify both boards powered on
+  ☐ Check serial monitor baud rate is 115200
+  ☐ Re-upload firmware to both boards
+
+If communication drops during operation:
+  ☐ Check for loose wire connections
+  ☐ Verify power supply is stable and adequate
+  ☐ Check serial monitor logs for error messages
+  ☐ Ensure GND connection remains solid
+
+If radio performance is poor:
+  ☐ COMMANDER: Verify external antenna connected to U.FL port
+  ☐ Check antenna for physical damage
+  ☐ Verify power settings in firmware (20dBm Wi-Fi, +9dBm BLE)
+  ☐ Ensure PSRAM configuration is correct (COMMANDER only)
+
+================================================================================
+                              NOTES
+================================================================================
+
+- GPIO 17 and 18 were chosen specifically because they are NOT strapping pins
+  on ESP32-S3. Strapping pins (0, 3, 45, 46) cannot be used during boot.
+
+- The handshake uses a "wait forever" approach - no timeout. Both boards will
+  indefinitely retry until connection is established.
+
+- Both boards run at 240MHz dual-core configuration.
+
+- USB CDC enabled on both boards for USB serial monitoring.
+
+- PSRAM configuration (QIO OPI) on COMMANDER is critical for 8MB operation.
+
+================================================================================
+                         LAST UPDATED: 2026-01-05
+================================================================================

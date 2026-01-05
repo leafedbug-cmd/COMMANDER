@@ -1,101 +1,122 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <Adafruit_NeoPixel.h>
+#include "esp_wifi.h"
 
-// Master Coder's Pin Mapping
-#define TX_PIN 18  // GPIO18 (safe pin, not strapping)
-#define RX_PIN 17  // GPIO17 (safe pin, not strapping)
-#define RGB_LED_PIN 48  // Onboard WS2812 RGB LED
+// UART to HQ (ESP32-C3)
+#define TX_PIN 18  // GPIO18 (TX)
+#define RX_PIN 17  // GPIO17 (RX)
+#define RGB_LED_PIN 48
 #define NUM_PIXELS 1
 
 Adafruit_NeoPixel statusLED(NUM_PIXELS, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
+bool hqLinked = false;
+unsigned long lastBLEBurst = 0;
+NimBLEAdvertising* adv = nullptr;
+
+static void setStatus(uint8_t r, uint8_t g, uint8_t b) {
+    statusLED.setPixelColor(0, statusLED.Color(r, g, b));
+    statusLED.show();
+}
 
 void setup() {
-    // 0. Initialize Status LED
     statusLED.begin();
-    statusLED.setBrightness(50); // 0-255
-    statusLED.setPixelColor(0, statusLED.Color(255, 0, 0)); // Red = Booting/Waiting
-    statusLED.show();
+    statusLED.setBrightness(50);
+    setStatus(255, 0, 0); // Red = booting
 
-    // 1. Initialize Serial Interfaces FIRST - critical for handshake timing
-    Serial.begin(115200); // USB Monitor
-    Serial1.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN); // Explicit GPIO43 (RX) / GPIO44 (TX)
-    delay(100); // Brief stabilization for UART
-    
-    while(!Serial && millis() < 2000) { delay(10); } // Wait up to 2s for USB Serial
-    
+    Serial.begin(115200);
+    Serial1.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+    delay(100);
+    while (!Serial && millis() < 2000) { delay(10); }
+
     Serial.println("\n\n========================================");
-    Serial.println("SOLDIER: Booting...");
-    Serial.printf("SOLDIER: RX Pin: %d, TX Pin: %d\n", RX_PIN, TX_PIN);
+    Serial.println("SOLDIER: Booting (HQ-controlled)");
+    Serial.printf("UART RX=%d TX=%d\n", RX_PIN, TX_PIN);
     Serial.println("========================================");
 
-    // 2. Handshake Loop: Wait for Commander (Lonely Binary) signal - NO TIMEOUT
-    Serial.println("SOLDIER: Waiting for Commander's READY_QUERY...");
-    Serial.println("SOLDIER: Will wait indefinitely for handshake...");
-    
-    // Clear any stale data in buffer
+    // Clear buffer and handshake with HQ
     while (Serial1.available()) { Serial1.read(); }
-    
-    // Wait forever until COMMANDER connects
+    Serial.println("SOLDIER: Waiting for HQ READY_QUERY...");
     while (true) {
         if (Serial1.available()) {
             String msg = Serial1.readStringUntil('\n');
-            msg.trim(); // Remove whitespace
-            Serial.printf("SOLDIER: Received: '%s'\n", msg.c_str());
-            
-            if (msg.indexOf("READY_QUERY") != -1) {
-                Serial.println("SOLDIER: Sending SOLDIER_READY response...");
+            msg.trim();
+            if (msg == "READY_QUERY") {
+                Serial.println("SOLDIER: HQ detected, sending SOLDIER_READY");
                 Serial1.println("SOLDIER_READY");
-                Serial1.flush(); // Ensure data is sent
-                
-                Serial.println("SOLDIER: Handshake complete. Linked to Commander.");
-                statusLED.setPixelColor(0, statusLED.Color(0, 255, 0)); // Green = Connected
-                statusLED.show();
-                delay(1000); // Hold green for visibility
+                Serial1.flush();
+                hqLinked = true;
+                setStatus(0, 255, 0); // Green = linked
+                delay(500);
                 break;
             }
         }
-        delay(10); // Small delay to prevent busy waiting
+        delay(10);
     }
 
-    // 3. BLE Radio Setup
+    // BLE setup
     Serial.println("SOLDIER: Initializing BLE Radio...");
     NimBLEDevice::init("");
-    
-    // Set Power to P9 (+9dBm) for maximum BLE saturation
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9); 
-    
-    statusLED.setPixelColor(0, statusLED.Color(0, 0, 255)); // Blue = BLE Armed
-    statusLED.show();
-    
-    Serial.println("SOLDIER: BLE Radio Armed at Max Power (+9dBm).");
-    Serial.println("SOLDIER: Ready for SWEEP_START commands.");
+    NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+    adv = NimBLEDevice::getAdvertising();
+
+    // Wi-Fi setup
+    Serial.println("SOLDIER: Initializing Wi-Fi Radio...");
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    esp_wifi_set_mode(WIFI_MODE_NULL);
+    esp_wifi_start();
+    esp_wifi_set_max_tx_power(80); // 20 dBm
+
+    setStatus(0, 0, 255); // Blue = armed
+    Serial.println("SOLDIER: Ready for JAM_WIFI / JAM_BLE commands from HQ.");
 }
 
 void loop() {
-    // 4. Reactive Jamming Loop - Listen for Commander's sweep commands
     if (Serial1.available()) {
         String cmd = Serial1.readStringUntil('\n');
         cmd.trim();
-        
-        if (cmd.indexOf("SWEEP_START") != -1) {
-            Serial.println("SOLDIER: >>> SWEEP_START - BLE BURST ACTIVE <<<");
-            
-            // Purple flash = Jamming active
-            statusLED.setPixelColor(0, statusLED.Color(255, 0, 255));
-            statusLED.show();
-            
-            // Generate high-intensity advertising packets on BLE channels
-            NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-            
-            // Flood the advertising channels (37, 38, 39) - 2.4GHz overlap with Wi-Fi
-            pAdvertising->start();
-            delay(80); // Match Commander's dwell time (100ms - processing overhead)
-            pAdvertising->stop();
-            
-            // Back to blue = Armed and ready
-            statusLED.setPixelColor(0, statusLED.Color(0, 0, 255));
-            statusLED.show();
+
+        if (cmd == "JAM_BLE") {
+            Serial.println("SOLDIER: JAM_BLE from HQ");
+            setStatus(255, 255, 0);
+            adv->start();
+            delay(80);
+            adv->stop();
+            lastBLEBurst = millis();
+            setStatus(0, 0, 255);
+            Serial1.println("SOL_BLE_ACK");
+            Serial1.flush();
+        } else if (cmd.startsWith("JAM_WIFI")) {
+            int ch = cmd.substring(8).toInt();
+            if (ch >= 1 && ch <= 13) {
+                Serial.printf("SOLDIER: JAM_WIFI %d\n", ch);
+                setStatus(255, 255, 0);
+                esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+                delay(80);
+                setStatus(0, 0, 255);
+                Serial1.println("SOL_WIFI_ACK");
+                Serial1.flush();
+            }
+        } else if (cmd.startsWith("JAM_BOTH")) {
+            int ch = cmd.substring(8).toInt();
+            if (ch >= 1 && ch <= 13) {
+                Serial.printf("SOLDIER: JAM_BOTH ch %d\n", ch);
+                setStatus(255, 255, 0);
+                esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+                adv->start();
+                delay(80);
+                adv->stop();
+                setStatus(0, 0, 255);
+                Serial1.println("SOL_BOTH_ACK");
+                Serial1.flush();
+            }
+        } else if (cmd == "PING") {
+            Serial1.println("PONG_SOL");
+            Serial1.flush();
         }
     }
+
+    delay(1);
 }
